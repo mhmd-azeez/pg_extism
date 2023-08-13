@@ -3,6 +3,7 @@ use extism_manifest::*;
 use pgx::{prelude::*, Json};
 use std::collections::BTreeMap;
 use serde::{Serialize, Deserialize};
+use std::env;
 
 pgx::pg_module_magic!();
 
@@ -72,6 +73,7 @@ fn extism_define(path: &str, name: &str) -> Result<(), Error> {
     Ok(pgx::Spi::run(&sql)?)
 }
 
+
 fn generate_dynamic_function(path: &str, name: &str, metadata: &PluginMetadata) -> String {
     let mut sql = format!("CREATE OR REPLACE FUNCTION {}(", name);
 
@@ -110,17 +112,34 @@ fn generate_dynamic_function(path: &str, name: &str, metadata: &PluginMetadata) 
         "    SELECT extism_call('{}', '{}', input_param) INTO result_json;\n",
         path, metadata.entry_point
     ));
+
     sql.push_str("    -- Return the desired field from the result JSON\n");
-    sql.push_str(&format!(
-        "    RETURN (result_json->>'{}')::{};\n",
-        metadata.return_field,
-        type_to_sql(&metadata.return_type)
-    ));
+    sql.push_str("    RETURN ");
+    match metadata.return_type {
+        Type::StringArray | Type::NumberArray | Type::JsonArray => {
+            sql.push_str(&format!(
+                "QUERY SELECT value::{} FROM json_array_elements((result_json->>'{}')::json)", 
+                inner_type_to_sql(&metadata.return_type), 
+                metadata.return_field));
+        }
+        _ => {
+            sql.push_str("(result_json->>'");
+            sql.push_str(&metadata.return_field);
+            sql.push_str("')::");
+            sql.push_str(&type_to_sql(&metadata.return_type));
+        }
+    }
+    sql.push_str(";\n");
+
     sql.push_str("EXCEPTION\n");
     sql.push_str("    WHEN others THEN\n");
     sql.push_str("        -- Handle exceptions if necessary\n");
     sql.push_str("        RAISE NOTICE 'An error occurred: %', SQLERRM;\n");
-    sql.push_str("        RETURN NULL;\n");
+
+    if !is_array(&metadata.return_type) {
+        sql.push_str("        RETURN NULL;\n");
+    }
+
     sql.push_str("END;\n");
     sql.push_str("$$ LANGUAGE plpgsql;");
 
@@ -131,14 +150,32 @@ fn type_to_sql(param_type: &Type) -> String {
     match param_type {
         Type::Number => "NUMERIC".to_owned(),
         Type::String => "TEXT".to_owned(),
-        Type::StringArray => "TEXT[]".to_owned(),
-        Type::NumberArray => "NUMERIC[]".to_owned(),
         Type::Json => "JSON".to_owned(),
-        Type::JsonArray => "JSON[]".to_owned(),
+        Type::StringArray => "SETOF TEXT".to_owned(),
+        Type::NumberArray => "SETOF NUMERIC".to_owned(),
+        Type::JsonArray => "SETOF JSON".to_owned(),
+    }
+}
+
+fn inner_type_to_sql(param_type: &Type) -> String {
+    match param_type {
+        Type::StringArray => type_to_sql(&Type::String),
+        Type::NumberArray => type_to_sql(&Type::Number),
+        Type::JsonArray => type_to_sql(&Type::Json),
+        _ => panic!("Type is not an array: {}", type_to_sql(param_type))
+    }
+}
+
+fn is_array(param_type: &Type) -> bool {
+    match param_type {
+        Type::StringArray | Type::NumberArray | Type::JsonArray  => true,
+        _ => false
     }
 }
 
 fn new_plugin<'a>(ctx: &'a Context, path: &'a str) -> Plugin<'a> {
+    let openai_api_key = env::var("OPENAI_API_KEY").expect("Error: OPENAI_API_KEY not found");
+
     let manifest = Manifest::new(vec![Wasm::file(path)])
         .with_memory_options(MemoryOptions { max_pages: Some(5) })
         .with_allowed_host("api.openai.com")
@@ -146,7 +183,7 @@ fn new_plugin<'a>(ctx: &'a Context, path: &'a str) -> Plugin<'a> {
         .with_config(
             vec![(
                 "openai_apikey".to_string(),
-                "".to_string(),
+                openai_api_key,
             )]
             .into_iter(),
         )
