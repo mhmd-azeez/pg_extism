@@ -146,6 +146,11 @@ fn generate_dynamic_function(path: &str, name: &str, metadata: &PluginMetadata) 
     sql
 }
 
+#[pg_extern]
+fn to_lowercase(input: &str) -> String {
+    input.to_lowercase()
+}
+
 fn type_to_sql(param_type: &Type) -> String {
     match param_type {
         Type::Number => "NUMERIC".to_owned(),
