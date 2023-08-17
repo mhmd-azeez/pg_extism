@@ -1,8 +1,8 @@
 use extism::*;
 use extism_manifest::*;
 use pgx::{prelude::*, Json};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use serde::{Serialize, Deserialize};
 use std::env;
 
 pgx::pg_module_magic!();
@@ -64,15 +64,15 @@ fn extism_define(path: &str, name: &str) -> Result<(), Error> {
         Err(err) => return Err(error!("Failed to call metadata function: {}", err)),
     };
 
-    let metadata : PluginMetadata = match serde_json::from_slice(metadata_json) {
+    let metadata: PluginMetadata = match serde_json::from_slice(metadata_json) {
         Ok(v) => v,
         Err(err) => return Err(error!("Failed to deserialize metadata: {}", err)),
     };
 
+    // Write an SQL function that calls `extism_call` when it's run
     let sql = generate_dynamic_function(path, name, &metadata);
     Ok(pgx::Spi::run(&sql)?)
 }
-
 
 fn generate_dynamic_function(path: &str, name: &str, metadata: &PluginMetadata) -> String {
     let mut sql = format!("CREATE OR REPLACE FUNCTION {}(", name);
@@ -118,12 +118,12 @@ fn generate_dynamic_function(path: &str, name: &str, metadata: &PluginMetadata) 
     match metadata.return_type {
         Type::StringArray | Type::NumberArray | Type::JsonArray => {
             sql.push_str(&format!(
-                "QUERY SELECT value::{} FROM json_array_elements((result_json->>'{}')::json)", 
-                inner_type_to_sql(&metadata.return_type), 
+                "QUERY SELECT value::{} FROM json_array_elements((result_json->'{}')::json)",
+                inner_type_to_sql(&metadata.return_type),
                 metadata.return_field));
         }
         _ => {
-            sql.push_str("(result_json->>'");
+            sql.push_str("(result_json->'");
             sql.push_str(&metadata.return_field);
             sql.push_str("')::");
             sql.push_str(&type_to_sql(&metadata.return_type));
@@ -162,14 +162,14 @@ fn inner_type_to_sql(param_type: &Type) -> String {
         Type::StringArray => type_to_sql(&Type::String),
         Type::NumberArray => type_to_sql(&Type::Number),
         Type::JsonArray => type_to_sql(&Type::Json),
-        _ => panic!("Type is not an array: {}", type_to_sql(param_type))
+        _ => panic!("Type is not an array: {}", type_to_sql(param_type)),
     }
 }
 
 fn is_array(param_type: &Type) -> bool {
     match param_type {
-        Type::StringArray | Type::NumberArray | Type::JsonArray  => true,
-        _ => false
+        Type::StringArray | Type::NumberArray | Type::JsonArray => true,
+        _ => false,
     }
 }
 
@@ -180,13 +180,7 @@ fn new_plugin<'a>(ctx: &'a Context, path: &'a str) -> Plugin<'a> {
         .with_memory_options(MemoryOptions { max_pages: Some(5) })
         .with_allowed_host("api.openai.com")
         .with_allowed_path("/", "/")
-        .with_config(
-            vec![(
-                "openai_apikey".to_string(),
-                openai_api_key,
-            )]
-            .into_iter(),
-        )
+        .with_config(vec![("openai_apikey".to_string(), openai_api_key)].into_iter())
         .with_timeout(std::time::Duration::from_secs(10));
 
     return Plugin::new_with_manifest(ctx, &manifest, [], true).unwrap();

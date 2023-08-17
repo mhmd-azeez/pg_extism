@@ -34,7 +34,7 @@ func metadata() int32 {
 		Parameters: map[string]string{
 			"path": "String",
 		},
-		ReturnType:  "StringArray",
+		ReturnType:  "JsonArray",
 		ReturnField: "rows",
 	}
 
